@@ -1,19 +1,3 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-# ====== Settings ======
-USER="MoeDia"                 # change if needed
-HOSTNAME_DEFAULT="$(hostname)"
-TIMEZONE_DEFAULT="$(timedatectl show -p Timezone --value || echo 'UTC')"
-LOCALE_DEFAULT="${LANG:-en_US.UTF-8}"
-KEYMAP_DEFAULT="us"
-
-# ====== Sanity checks ======
-id "$USER" >/dev/null 2>&1 || { echo "User $USER does not exist. Edit USER=..."; exit 1; }
-command -v pacman >/dev/null || { echo "Not Arch/No pacman?"; exit 1; }
-
-echo ">>> Using user=$USER, hostname=$HOSTNAME_DEFAULT, tz=$TIMEZONE_DEFAULT, locale=$LOCALE_DEFAULT"
-
 # ====== Packages ======
 BASE_APPS="kitty zsh zsh-autosuggestions zsh-syntax-highlighting fzf bat fd ripgrep tldr thefuck"
 
