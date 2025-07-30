@@ -1,109 +1,90 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-### ===== FIXED OPTIONS (per your choices) =====
-ZSH_FRAMEWORK="zinit"                 # zinit chosen as the best balance of speed & flexibility
-ENABLE_NETWORKMANAGER="true"          # keep NetworkManager enabled
-SET_DEFAULTS_FOR_SANE_USE="true"      # enable ufw with sane defaults, etc.
+### ===== CONFIGURATION =====
+ZSH_FRAMEWORK="zinit"                # choices: zinit | oh-my-zsh
+ENABLE_NETWORKMANAGER="true"         # true to enable NM.service
+SET_DEFAULTS_FOR_SANE_USE="true"     # enable and configure ufw
 PRIMARY_USER="${PRIMARY_USER:-${SUDO_USER:-$USER}}"
 
 ### ===== SANITY CHECKS =====
 if [[ $EUID -ne 0 ]]; then
-  echo "Run as root: sudo $0"; exit 1
+  echo "ERROR: must be run as root"; exit 1
 fi
-if ! command -v pacman >/dev/null 2>&1; then
-  echo "This script is for Arch Linux."; exit 1
+if ! command -v pacman &>/dev/null; then
+  echo "ERROR: this script only works on Arch Linux"; exit 1
 fi
-home_dir="$(eval echo ~"$PRIMARY_USER")"
-if [[ ! -d "$home_dir" ]]; then
-  echo "Could not resolve home for user $PRIMARY_USER"; exit 1
+HOME_DIR="$(getent passwd "$PRIMARY_USER" | cut -d: -f6)"
+if [[ ! -d "$HOME_DIR" ]]; then
+  echo "ERROR: user '$PRIMARY_USER' not found"; exit 1
 fi
-echo "==> Installing for user: $PRIMARY_USER (home: $home_dir)"
+echo "Installing for user: $PRIMARY_USER (home: $HOME_DIR)"
 
-### ===== SYNC & BASE TOOLS =====
+### ===== UPDATE & BASE TOOLS =====
 pacman -Syu --noconfirm
-pacman -S --needed --noconfirm base-devel git
+pacman -S --noconfirm --needed base-devel git runuser
 
-### ===== AUR HELPER: yay =====
-if ! command -v yay >/dev/null 2>&1; then
-  echo "==> Installing yay (AUR helper)"
-  sudo -u "$PRIMARY_USER" bash -lc '
-    set -e
+### ===== AUR HELPER (yay) =====
+if ! command -v yay &>/dev/null; then
+  echo "Installing yay (AUR helper)..."
+  runuser -u "$PRIMARY_USER" -- bash -lc '
     cd ~
-    rm -rf yay || true
+    rm -rf yay
     git clone https://aur.archlinux.org/yay.git
     cd yay
     makepkg -si --noconfirm
   '
 else
-  echo "==> yay already installed"
+  echo "yay already present"
 fi
 
-### ===== PACKAGE SETS =====
-# Core Wayland/Hyprland + greeter
+### ===== PACKAGE GROUPS =====
 CORE_PKGS=(
-  hyprland waybar wofi mako wlogout grim slurp swappy fastfetch wallust
-  nwg-look wl-clipboard xdg-desktop-portal xdg-desktop-portal-hyprland
-  hyprpaper hyprlock hypridle
-  polkit-gnome
-  greetd tuigreet
+  hyprland waybar wofi mako swaylock wlogout
+  grim slurp swappy fastfetch
+  polkit-gnome greetd tuigreet
 )
 
-# PipeWire audio
-AUDIO_PKGS=( pipewire wireplumber pipewire-alsa pipewire-pulse pipewire-jack pavucontrol )
-
-# Shell / CLI
+AUDIO_PKGS=( pipewire wireplumber pipewire-alsa pipewire-pulse pavucontrol )
 SHELL_PKGS=( kitty zsh zsh-autosuggestions zsh-syntax-highlighting fzf bat fd ripgrep tldr thefuck )
-
-# Apps (Wayland-friendly)
-APPS_PKGS=( firefox zathura abiword gnumeric mpv galculator thunar ddcutil )
-
-# Thunar helpers
+APP_PKGS=( firefox zathura abiword gnumeric mpv galculator thunar ddcutil )
 THUNAR_EXTRAS=( gvfs udisks2 tumbler ffmpegthumbnailer thunar-archive-plugin file-roller )
-
-# Printing & scanning (you said yes)
 PRINT_PKGS=( cups cups-pdf system-config-printer avahi nss-mdns sane simple-scan )
-
-# Intel CPU + AMD GPU
 GPU_CPU_PKGS=( mesa vulkan-radeon libva-mesa-driver libvdpau mesa-utils intel-ucode )
-
-# Networking
 NET_PKGS=( networkmanager )
-
-# Misc utilities
 UTIL_PKGS=( xdg-user-dirs xdg-utils ufw ntfs-3g )
-
-# Qt Wayland + config tools
 QT_PKGS=( qt5-wayland qt6-wayland qt5ct qt6ct )
 
+# Combine all *repo* packages
 REPO_PKGS=(
   "${CORE_PKGS[@]}" "${AUDIO_PKGS[@]}" "${SHELL_PKGS[@]}"
-  "${APPS_PKGS[@]}" "${THUNAR_EXTRAS[@]}" "${PRINT_PKGS[@]}"
+  "${APP_PKGS[@]}" "${THUNAR_EXTRAS[@]}" "${PRINT_PKGS[@]}"
   "${GPU_CPU_PKGS[@]}" "${QT_PKGS[@]}" "${UTIL_PKGS[@]}"
 )
-
 if [[ "$ENABLE_NETWORKMANAGER" == "true" ]]; then
   REPO_PKGS+=( "${NET_PKGS[@]}" )
 fi
 
-echo "==> Installing repo packages (pacman)"
-pacman -S --needed --noconfirm "${REPO_PKGS[@]}"
+echo "==> Installing official repo packages"
+pacman -S --noconfirm --needed "${REPO_PKGS[@]}"
 
-### AUR/mixed
-AUR_PKGS=( sublime-text-4 ncspot )
-echo "==> Installing AUR packages (yay)"
-sudo -u "$PRIMARY_USER" yay -S --needed --noconfirm "${AUR_PKGS[@]}"
+### ===== AUR-ONLY PACKAGES =====
+AUR_PKGS=(
+  # Hyprland extras & themers
+  xdg-desktop-portal-hyprland hyprpaper hypridle hyprlock wallust nwg-look
+  # your editor + any remaining
+  sublime-text-4 ncspot
+)
+echo "==> Installing AUR packages"
+runuser -u "$PRIMARY_USER" -- yay -S --noconfirm --needed "${AUR_PKGS[@]}"
 
 ### ===== ENABLE SERVICES =====
 systemctl enable greetd.service
-if [[ "$ENABLE_NETWORKMANAGER" == "true" ]]; then
-  systemctl enable NetworkManager.service
-fi
-systemctl enable cups.service
-systemctl enable avahi-daemon.service
-systemctl enable ufw.service
+systemctl enable cups.service avahi-daemon.service
+[[ "$ENABLE_NETWORKMANAGER" == "true" ]] && systemctl enable NetworkManager.service
+[[ "$SET_DEFAULTS_FOR_SANE_USE" == "true" ]] && systemctl enable ufw.service
 
-### ===== GREETD CONFIG (tuigreet -> Hyprland) =====
+### ===== GREETD (tuigreet) =====
 install -Dm644 /dev/stdin /etc/greetd/config.toml <<'EOF'
 [terminal]
 vt = 1
@@ -113,22 +94,20 @@ command = "tuigreet --greetd --remember --time --cmd 'Hyprland'"
 user = "greeter"
 EOF
 
-### ===== mDNS for printers (Avahi) =====
-if grep -q '^hosts:' /etc/nsswitch.conf; then
-  sed -i 's/^hosts:.*/hosts: files mymachines mdns_minimal [NOTFOUND=return] resolve [!UNAVAIL=return] dns myhostname/' /etc/nsswitch.conf
-fi
+### ===== mDNS for printers =====
+sed -i 's|^hosts:.*|hosts: files mymachines mdns_minimal [NOTFOUND=return] resolve [!UNAVAIL=return] dns myhostname|' /etc/nsswitch.conf
 
-### ===== FIREWALL DEFAULTS =====
+### ===== FIREWALL =====
 if [[ "$SET_DEFAULTS_FOR_SANE_USE" == "true" ]]; then
-  ufw default deny incoming || true
-  ufw default allow outgoing || true
-  ufw --force enable || true
+  ufw default deny incoming
+  ufw default allow outgoing
+  ufw --force enable
 fi
 
-### ===== USER DIRS =====
-sudo -u "$PRIMARY_USER" xdg-user-dirs-update || true
+### ===== USER DIRECTORIES =====
+runuser -u "$PRIMARY_USER" -- xdg-user-dirs-update || true
 
-### ===== DDCUTIL SUPPORT =====
+### ===== DDCUTIL (external brightness) =====
 install -Dm644 /dev/stdin /etc/modules-load.d/i2c-dev.conf <<'EOF'
 i2c-dev
 EOF
@@ -138,24 +117,19 @@ KERNEL=="i2c-[0-9]*", GROUP="video", MODE="0660"
 EOF
 usermod -aG video "$PRIMARY_USER" || true
 
-### ===== ZSH SETUP (zinit) =====
-chsh -s /bin/zsh "$PRIMARY_USER" || true
-mkdir -p "$home_dir/.config" "$home_dir/.config/zsh"
-sudo -u "$PRIMARY_USER" bash -lc '
-  mkdir -p ~/.local/share/zinit
-  [[ -d ~/.local/share/zinit/bin ]] || git clone https://github.com/zdharma-continuum/zinit.git ~/.local/share/zinit/bin
+### ===== ZSH + ZINIT SETUP =====
+chsh -s /usr/bin/zsh "$PRIMARY_USER" || true
+mkdir -p "$HOME_DIR/.config/zsh" "$HOME_DIR/.local/share/zinit"
+
+runuser -u "$PRIMARY_USER" -- bash -lc '
+  if [[ ! -d ~/.local/share/zinit/bin ]]; then
+    git clone https://github.com/zdharma-continuum/zinit.git ~/.local/share/zinit/bin
+  fi
 '
-install -Dm644 /dev/stdin "$home_dir/.zshrc" <<'EOF'
-# ----- ZSH with zinit -----
+
+install -Dm644 /dev/stdin "$HOME_DIR/.zshrc" <<'EOF'
+# ZSH + ZINIT
 export ZDOTDIR="$HOME/.config/zsh"
-export PATH="$HOME/.local/bin:$PATH"
-
-# Wayland/Qt
-export QT_QPA_PLATFORM="wayland;xcb"
-export QT_QPA_PLATFORMTHEME="qt5ct"
-export MOZ_ENABLE_WAYLAND=1
-
-# Load zinit
 export ZINIT_HOME="$HOME/.local/share/zinit"
 source "$ZINIT_HOME/bin/zinit.zsh"
 
@@ -163,26 +137,24 @@ source "$ZINIT_HOME/bin/zinit.zsh"
 zinit light zsh-users/zsh-autosuggestions
 zinit light zsh-users/zsh-syntax-highlighting
 
-# FZF keybindings (if available)
-[[ -f /usr/share/fzf/key-bindings.zsh ]] && source /usr/share/fzf/key-bindings.zsh
-
-# Prompt (fallback if pure not present)
-autoload -Uz promptinit; promptinit; PROMPT='%F{cyan}%n@%m%f %F{yellow}%~%f %# '
-
 # Aliases
 alias cat='bat --paging=never'
-alias ls='ls --color=auto'
-alias grep='rg'
-eval "$(thefuck --alias)" 2>/dev/null
+alias ls='exa --icons --group-directories-first'
+eval "$(thefuck --alias)"
+
+# FZF
+[[ -f /usr/share/fzf/key-bindings.zsh ]] && source /usr/share/fzf/key-bindings.zsh
 EOF
-chown -R "$PRIMARY_USER":"$PRIMARY_USER" "$home_dir/.config" "$home_dir/.zshrc" || true
 
-### ===== HYPRLAND BASE CONFIGS =====
-install -d -m 755 "$home_dir/.config/hypr" "$home_dir/.config/waybar" "$home_dir/.config/wofi" "$home_dir/.config/mako"
+chown -R "$PRIMARY_USER":"$PRIMARY_USER" \
+  "$HOME_DIR/.config" "$HOME_DIR/.local/share/zinit" "$HOME_DIR/.zshrc"
 
-# Hyprland
-install -Dm644 /dev/stdin "$home_dir/.config/hypr/hyprland.conf" <<'EOF'
-# --- Minimal Hyprland config ---
+### ===== HYPRLAND CONFIGS =====
+CFG_ROOT="$HOME_DIR/.config"
+install -d -m755 "$CFG_ROOT/hypr" "$CFG_ROOT/waybar" "$CFG_ROOT/wofi" "$CFG_ROOT/mako"
+
+# hyprland.conf
+install -Dm644 /dev/stdin "$CFG_ROOT/hypr/hyprland.conf" <<'EOF'
 monitor=,preferred,auto,1
 
 input {
@@ -207,19 +179,17 @@ bind = ,Print,exec,grim -g "$(slurp)" - | swappy -f -
 bind = SUPER,ESC,exec,wlogout
 EOF
 
-# hyprpaper
-install -Dm644 /dev/stdin "$home_dir/.config/hypr/hyprpaper.conf" <<'EOF'
-# hyprpaper config — set your wallpaper(s):
+# hyprpaper.conf
+install -Dm644 /dev/stdin "$CFG_ROOT/hypr/hyprpaper.conf" <<'EOF'
 # preload = /usr/share/backgrounds/archlinux/archbtw.jpg
 # wallpaper = ,/usr/share/backgrounds/archlinux/archbtw.jpg
 EOF
 
-# hypridle -> hyprlock
-install -Dm644 /dev/stdin "$home_dir/.config/hypr/hypridle.conf" <<'EOF'
+# hypridle.conf
+install -Dm644 /dev/stdin "$CFG_ROOT/hypr/hypridle.conf" <<'EOF'
 general {
   lock_cmd = hyprlock
   before_sleep_cmd = hyprlock
-  after_sleep_cmd = hyprpaper
 }
 listener {
   timeout = 600
@@ -227,29 +197,28 @@ listener {
 }
 EOF
 
-# Waybar (minimal)
-install -Dm644 /dev/stdin "$home_dir/.config/waybar/config.jsonc" <<'EOF'
+# waybar
+install -Dm644 /dev/stdin "$CFG_ROOT/waybar/config.json" <<'EOF'
 {
-  "layer": "top",
-  "position": "top",
+  "layer": "top", "position": "top",
   "modules-left": ["workspaces"],
   "modules-center": ["clock"],
-  "modules-right": ["cpu", "memory", "network", "pulseaudio"],
-  "clock": { "format": "{:%Y-%m-%d  %H:%M}" }
+  "modules-right": ["cpu","memory","network","pulseaudio"],
+  "clock": {"format":"{:%Y-%m-%d %H:%M}"}
 }
 EOF
-install -Dm644 /dev/stdin "$home_dir/.config/waybar/style.css" <<'EOF'
+install -Dm644 /dev/stdin "$CFG_ROOT/waybar/style.css" <<'EOF'
 * { font-size: 12pt; }
-#clock, #cpu, #memory, #network, #pulseaudio { padding: 0 10px; }
+#clock,#cpu,#memory,#network,#pulseaudio { padding: 0 8px; }
 EOF
 
-# Wofi
-install -Dm644 /dev/stdin "$home_dir/.config/wofi/style.css" <<'EOF'
+# wofi
+install -Dm644 /dev/stdin "$CFG_ROOT/wofi/style.css" <<'EOF'
 window { border-radius: 12px; }
 EOF
 
-# Mako
-install -Dm644 /dev/stdin "$home_dir/.config/mako/config" <<'EOF'
+# mako
+install -Dm644 /dev/stdin "$CFG_ROOT/mako/config" <<'EOF'
 font=monospace 12
 background-color=#1e1e2e
 text-color=#eeeeee
@@ -257,22 +226,18 @@ border-color=#6c7086
 default-timeout=5000
 EOF
 
-chown -R "$PRIMARY_USER":"$PRIMARY_USER" "$home_dir/.config"
+chown -R "$PRIMARY_USER":"$PRIMARY_USER" "$HOME_DIR/.config"
 
-### ===== DONE =====
+### ===== FINISHED =====
 cat <<'EOM'
 
-All set!
-
-Next steps:
-1) (Optional) set a wallpaper in ~/.config/hypr/hyprpaper.conf (uncomment and set a real path).
-2) Start services now (or reboot):
-   sudo systemctl start greetd cups avahi-daemon ufw
-   sudo systemctl start NetworkManager
-3) Log in via tuigreet; Hyprland will launch automatically.
-4) Use nwg-look (GTK) and qt5ct/qt6ct later to theme apps.
-
-Tip: If you later want Oh My Zsh instead, re-run this script with:
-  ZSH_FRAMEWORK=oh-my-zsh sudo ./hyprland-install.sh
+✅ All done!
+Next:
+ 1) Uncomment/set your wallpaper in ~/.config/hypr/hyprpaper.conf
+ 2) Reboot or manually start services:
+     systemctl start greetd cups avahi-daemon ufw
+     systemctl start NetworkManager
+ 3) Log in on tty1 via tuigreet → Hyprland launches.
+ 4) Theme GTK/Qt with nwg-look, qt5ct/qt6ct.
 
 EOM
